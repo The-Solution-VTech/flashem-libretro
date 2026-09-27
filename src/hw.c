@@ -1351,6 +1351,63 @@ static void lcd_int_check(HW *hw) {
     int_set(hw, INT_LCD, (hw->lcd[0x14 >> 2] & 0x3F) != 0);
 }
 
+/* VFLASH_GECAP=<file>,<frame>[,<frames>]: record the graphics engine's
+ * input for gereplay (tools/gereplay.c) - the GE state and all of RAM before
+ * the first list from <frame> on, then before each later list only the 4 KB
+ * pages the CPU changed (what the GE itself drew is left out, so a replay
+ * shows what the current ge.c draws), with the list address and surface.
+ * Records:
+ *   "GECAP2" u32 sizeof(GE), GE
+ *   'P' u32 addr, 4096 bytes       a RAM page
+ *   'L' u32 list, u32 surface (row 0, as GE.surface), u32 top, u32 frame
+ *   'E'                            end */
+static uint8_t *ge_cap_shadow;
+static int ge_cap_on;
+
+/* after a list has run: take what the GE drew into the shadow */
+static void ge_capture_done(HW *hw) {
+    if (ge_cap_on) memcpy(ge_cap_shadow, hw->ram, RAM_SIZE);
+}
+
+static void ge_capture(HW *hw, uint32_t list) {
+    static FILE *f;
+    uint8_t *shadow = ge_cap_shadow;
+    static uint64_t from, to;
+    static int state;   /* 0 unparsed, 1 waiting, 2 recording, 3 done */
+    if (state == 0) {
+        const char *e = getenv("VFLASH_GECAP");
+        char path[512];
+        unsigned long fr = 0, n = 1;
+        state = 3;
+        if (!e || sscanf(e, "%511[^,],%lu,%lu", path, &fr, &n) < 2) return;
+        if (!(f = fopen(path, "wb")) || !(shadow = ge_cap_shadow = calloc(1, RAM_SIZE))) return;
+        from = fr; to = fr + n; state = 1;
+    }
+    if (state == 1 && hw->frame >= from) {
+        uint32_t sz = sizeof(GE);
+        fwrite("GECAP2", 1, 6, f);
+        fwrite(&sz, 4, 1, f);
+        fwrite(&hw->ge, sizeof(GE), 1, f);
+        memset(shadow, 0xA5, RAM_SIZE);   /* forces every page out first */
+        state = 2;
+        ge_cap_on = 1;
+    }
+    if (state != 2) return;
+    if (hw->frame >= to) {
+        fputc('E', f); fclose(f); f = NULL; state = 3; ge_cap_on = 0;
+        printf("[GECAP] done\n");
+        return;
+    }
+    for (uint32_t o = 0; o < RAM_SIZE; o += 4096)
+        if (memcmp(shadow + o, hw->ram + o, 4096)) {
+            uint32_t a = 0x10000000u + o;
+            memcpy(shadow + o, hw->ram + o, 4096);
+            fputc('P', f); fwrite(&a, 4, 1, f); fwrite(hw->ram + o, 1, 4096, f);
+        }
+    uint32_t rec[4] = { list, hw->ge.surface, (uint32_t)hw->ge.top, (uint32_t)hw->frame };
+    fputc('L', f); fwrite(rec, 4, 4, f);
+}
+
 static void lcd_run_list(HW *hw) {
     uint32_t a = hw->lcd[0x28 >> 2];
     if (getenv("VFLASH_LCDLOG")) {
@@ -1387,8 +1444,10 @@ static void lcd_run_list(HW *hw) {
             printf("[SURF] frame %lu list %08X: +90 %08X +94 %08X +98 %08X\n", (unsigned long)hw->frame, a,
                    l90 = hw->lcd[0x90 >> 2], l94 = hw->lcd[0x94 >> 2], l98 = hw->lcd[0x98 >> 2]);
     }
+    ge_capture(hw, a);
     uint32_t px0 = hw->ge.pixels;
     ge_run(&hw->ge, a);
+    ge_capture_done(hw);
     if (hw->ge.log && hw->frame % 60 == 0)
         printf("[GE] frame %lu: %u sprites, %u pixels so far; tex (%d,%d) %d bpp pal (%d,%d)\n",
                (unsigned long)hw->frame, hw->ge.sprites, hw->ge.pixels, hw->ge.tex_x, hw->ge.tex_y,

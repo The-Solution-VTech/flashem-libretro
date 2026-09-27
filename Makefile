@@ -8,7 +8,7 @@ SRCS = src/main.c src/vflash.c src/hw.c src/arm9.c src/cp15.c src/cdrom.c src/cd
 OBJS = $(SRCS:.c=.o)
 BIN  = flashem
 
-TOOLS = disc_analyze mjp_extract ptx_extract disc_compare testrom_gen
+TOOLS = gereplay disc_analyze mjp_extract ptx_extract disc_compare testrom_gen
 
 all: $(BIN) $(TOOLS)
 
@@ -20,6 +20,10 @@ testrom_gen: testrom_gen.c
 
 testrom.bin: testrom_gen
 	./testrom_gen
+
+# builds ge.c itself, so it never links a stale ge.o
+gereplay: tools/gereplay.c src/ge.c src/ge.h
+	$(CC) -O2 -Wall -Wextra tools/gereplay.c src/ge.c -o $@ -lm
 
 disc_analyze: src/disc_analyze.c
 	$(CC) -O2 -Wall src/disc_analyze.c -o disc_analyze
