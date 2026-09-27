@@ -30,18 +30,13 @@ static inline void w32(ARM9 *c, uint32_t a, uint32_t v){ c->mem_write32(c->mem_c
 static inline void w16(ARM9 *c, uint32_t a, uint16_t v){ c->mem_write16(c->mem_ctx,a&~1u,v); }
 static inline void w8 (ARM9 *c, uint32_t a, uint8_t  v){ c->mem_write8 (c->mem_ctx,a,v);     }
 
-static int cond_ok(ARM9 *cpu, uint32_t cond) {
-    switch(cond){
-    case 0: return  Z_FLAG; case 1: return !Z_FLAG;
-    case 2: return  C_FLAG; case 3: return !C_FLAG;
-    case 4: return  N_FLAG; case 5: return !N_FLAG;
-    case 6: return  V_FLAG; case 7: return !V_FLAG;
-    case 8: return  C_FLAG && !Z_FLAG; case 9: return !C_FLAG || Z_FLAG;
-    case 10: return N_FLAG == V_FLAG;  case 11: return N_FLAG != V_FLAG;
-    case 12: return !Z_FLAG && (N_FLAG == V_FLAG);
-    case 13: return  Z_FLAG || (N_FLAG != V_FLAG);
-    case 14: return 1; default: return 0;
-    }
+/* Bit NZCV of cond_tab[cond] says whether cond passes with those flags:
+ * EQ NE CS CC MI PL VS VC HI LS GE LT GT LE AL, and never for 0xF. */
+static const uint16_t cond_tab[16] = {
+    0xF0F0, 0x0F0F, 0xCCCC, 0x3333, 0xFF00, 0x00FF, 0xAAAA, 0x5555,
+    0x0C0C, 0xF3F3, 0xAA55, 0x55AA, 0x0A05, 0xF5FA, 0xFFFF, 0x0000 };
+static inline int cond_ok(ARM9 *cpu, uint32_t cond) {
+    return cond_tab[cond & 15] >> (CPSR >> 28) & 1;
 }
 
 typedef struct { uint32_t v; int c; } SR;
@@ -53,7 +48,11 @@ static SR bshift(uint32_t val, int type, int amt, int cin) {
     case 1: r.c=(amt<=32)?(int)((val>>(amt-1))&1):0;  r.v=(amt<32)?(val>>amt):0; break;
     case 2: r.c=(int)(((int32_t)val>>(amt<32?amt-1:31))&1);
             r.v=(uint32_t)((int32_t)val>>(amt<32?amt:31)); break;
-    case 3: amt&=31; if(amt){ r.v=(val>>amt)|(val<<(32-amt)); r.c=(int)((val>>(amt-1))&1); } break;
+    case 3:
+        amt&=31;
+        if(amt){ r.v=(val>>amt)|(val<<(32-amt)); r.c=(int)((val>>(amt-1))&1); }
+        else r.c=(int)(val>>31);
+        break;
     }
     return r;
 }
@@ -67,6 +66,7 @@ static SR decode_shift(ARM9 *cpu, uint32_t insn) {
     if(insn&(1<<4)) { amt=cpu->r[(insn>>8)&0xF]&0xFF; }
     else { amt=(insn>>7)&0x1F;
         if(!amt && type==3){ SR r; r.c=val&1; r.v=(val>>1)|((uint32_t)C_FLAG<<31); return r; }
+        if(!amt && (type==1 || type==2)) amt=32;   /* LSR #32 / ASR #32 */
     }
     return bshift(val,type,amt,C_FLAG);
 }
@@ -75,28 +75,43 @@ static uint32_t decode_imm(uint32_t insn){
     return rot?(i>>rot)|(i<<(32-rot)):i;
 }
 
+/* Banked registers. R8-R12 have one copy for FIQ and one for every other
+ * mode; R13/R14 one per privileged mode plus one USR and SYS share. Leaving a
+ * mode files its registers away, entering one brings its own back. */
 static void save_bank(ARM9 *cpu, int m) {
-    switch(m&0x1F){
-    case ARM9_MODE_FIQ:
+    m &= 0x1F;
+    if (m == ARM9_MODE_FIQ) {
         cpu->r8_fiq=cpu->r[8];cpu->r9_fiq=cpu->r[9];cpu->r10_fiq=cpu->r[10];
         cpu->r11_fiq=cpu->r[11];cpu->r12_fiq=cpu->r[12];
-        cpu->r13_fiq=cpu->r[13];cpu->r14_fiq=cpu->r[14];cpu->spsr_fiq=cpu->spsr; break;
+    } else {
+        cpu->r8_usr=cpu->r[8];cpu->r9_usr=cpu->r[9];cpu->r10_usr=cpu->r[10];
+        cpu->r11_usr=cpu->r[11];cpu->r12_usr=cpu->r[12];
+    }
+    switch(m){
+    case ARM9_MODE_FIQ: cpu->r13_fiq=cpu->r[13];cpu->r14_fiq=cpu->r[14];cpu->spsr_fiq=cpu->spsr; break;
     case ARM9_MODE_IRQ: cpu->r13_irq=cpu->r[13];cpu->r14_irq=cpu->r[14];cpu->spsr_irq=cpu->spsr; break;
     case ARM9_MODE_SVC: cpu->r13_svc=cpu->r[13];cpu->r14_svc=cpu->r[14];cpu->spsr_svc=cpu->spsr; break;
     case ARM9_MODE_ABT: cpu->r13_abt=cpu->r[13];cpu->r14_abt=cpu->r[14];cpu->spsr_abt=cpu->spsr; break;
     case ARM9_MODE_UND: cpu->r13_und=cpu->r[13];cpu->r14_und=cpu->r[14];cpu->spsr_und=cpu->spsr; break;
+    default:            cpu->r13_usr=cpu->r[13];cpu->r14_usr=cpu->r[14]; break;
     }
 }
 static void load_bank(ARM9 *cpu, int m) {
-    switch(m&0x1F){
-    case ARM9_MODE_FIQ:
+    m &= 0x1F;
+    if (m == ARM9_MODE_FIQ) {
         cpu->r[8]=cpu->r8_fiq;cpu->r[9]=cpu->r9_fiq;cpu->r[10]=cpu->r10_fiq;
         cpu->r[11]=cpu->r11_fiq;cpu->r[12]=cpu->r12_fiq;
-        cpu->r[13]=cpu->r13_fiq;cpu->r[14]=cpu->r14_fiq;cpu->spsr=cpu->spsr_fiq; break;
+    } else {
+        cpu->r[8]=cpu->r8_usr;cpu->r[9]=cpu->r9_usr;cpu->r[10]=cpu->r10_usr;
+        cpu->r[11]=cpu->r11_usr;cpu->r[12]=cpu->r12_usr;
+    }
+    switch(m){
+    case ARM9_MODE_FIQ: cpu->r[13]=cpu->r13_fiq;cpu->r[14]=cpu->r14_fiq;cpu->spsr=cpu->spsr_fiq; break;
     case ARM9_MODE_IRQ: cpu->r[13]=cpu->r13_irq;cpu->r[14]=cpu->r14_irq;cpu->spsr=cpu->spsr_irq; break;
     case ARM9_MODE_SVC: cpu->r[13]=cpu->r13_svc;cpu->r[14]=cpu->r14_svc;cpu->spsr=cpu->spsr_svc; break;
     case ARM9_MODE_ABT: cpu->r[13]=cpu->r13_abt;cpu->r[14]=cpu->r14_abt;cpu->spsr=cpu->spsr_abt; break;
     case ARM9_MODE_UND: cpu->r[13]=cpu->r13_und;cpu->r[14]=cpu->r14_und;cpu->spsr=cpu->spsr_und; break;
+    default:            cpu->r[13]=cpu->r13_usr;cpu->r[14]=cpu->r14_usr; break;
     }
 }
 static void set_mode(ARM9 *cpu, uint32_t ncpsr){
@@ -484,6 +499,17 @@ static int vfp_mrrc_mcrr(ARM9 *cpu, uint32_t insn) {
 }
 
 static void exec_arm(ARM9 *cpu, uint32_t insn) {
+    if((insn>>28)==0xF){
+        /* ARMv5 unconditional space: BLX <imm> calls Thumb code, the H bit
+         * adding a halfword; PLD and the rest are hints or unpredictable. */
+        if((insn&0x0E000000)==0x0A000000){
+            int32_t off=((int32_t)(insn<<8)>>6)|(int32_t)((insn>>23)&2);
+            LR=PC-4;
+            PC=(uint32_t)((int32_t)PC+off);
+            CPSR|=ARM9_FLAG_T;
+        }
+        return;
+    }
     if(!cond_ok(cpu,insn>>28)) return;
 
     /* BX Rm — Branch and Exchange (ARM→Thumb or Thumb→ARM) */
@@ -517,7 +543,7 @@ static void exec_arm(ARM9 *cpu, uint32_t insn) {
     if((insn&0x0FB00000)==0x03200000||(insn&0x0FB00FF0)==0x01200000){
         uint32_t val=(insn&(1<<25))?decode_imm(insn):cpu->r[insn&0xF];
         uint32_t mask=0; if(insn&(1<<19)) mask|=0xF0000000u; if(insn&(1<<16)) mask|=0xDFu; /* 0xDF not 0xFF: T bit (bit5) must not be changed by MSR */
-        if(insn&(1<<22)) cpu->spsr=(cpu->spsr&~mask)|(val&mask);
+        if(insn&(1<<22)){ if(insn&(1<<16)) mask|=0x20u; cpu->spsr=(cpu->spsr&~mask)|(val&mask); }
         else set_mode(cpu,(CPSR&~mask)|(val&mask));
         return;
     }
@@ -529,7 +555,7 @@ static void exec_arm(ARM9 *cpu, uint32_t insn) {
     }
     if((insn&0x0F8000F0)==0x00800090){
         int rdhi=(insn>>16)&0xF,rdlo=(insn>>12)&0xF,rs=(insn>>8)&0xF,rm=insn&0xF;
-        int s=(insn>>20)&1,a=(insn>>21)&1,sgn=!((insn>>22)&1);
+        int s=(insn>>20)&1,a=(insn>>21)&1,sgn=(insn>>22)&1;   /* U bit: 1 = SMULL/SMLAL */
         uint64_t res=sgn?((uint64_t)(int64_t)(int32_t)cpu->r[rm]*(int64_t)(int32_t)cpu->r[rs]):((uint64_t)cpu->r[rm]*cpu->r[rs]);
         if(a) res+=((uint64_t)cpu->r[rdhi]<<32)|cpu->r[rdlo];
         cpu->r[rdhi]=(uint32_t)(res>>32); cpu->r[rdlo]=(uint32_t)res;
@@ -547,6 +573,14 @@ static void exec_arm(ARM9 *cpu, uint32_t insn) {
         int l=(insn>>20)&1,rn=(insn>>16)&0xF,rd=(insn>>12)&0xF,sh=(insn>>5)&3;
         uint32_t off=imm?(((insn>>4)&0xF0)|(insn&0xF)):cpu->r[insn&0xF];
         uint32_t base=cpu->r[rn], addr=p?(u?base+off:base-off):base;
+        if(!l && sh>=2){
+            /* LDRD (SH=2) / STRD (SH=3): Rd, Rd+1 at addr, addr+4 */
+            if(sh==2){ cpu->r[rd]=r32(cpu,addr); cpu->r[rd+1]=r32(cpu,addr+4); }
+            else     { w32(cpu,addr,cpu->r[rd]); w32(cpu,addr+4,cpu->r[rd+1]); }
+            if(!p) addr=u?base+off:base-off;
+            if(!p||w) cpu->r[rn]=addr;
+            return;
+        }
         if(l){ uint32_t v=0;
             if(sh==1) v=r16(cpu,addr);
             else if(sh==2) v=(uint32_t)(int32_t)(int8_t)r8(cpu,addr);
@@ -644,7 +678,7 @@ static void exec_arm(ARM9 *cpu, uint32_t insn) {
         case 0xE: res=a&~b; if(s){SET_NZ(res);SET_C(shc);} break;
         case 0xF: res=~b;   if(s){SET_NZ(res);SET_C(shc);} break;
         }
-        if(wr){ cpu->r[rd]=res; if(rd==15){ if(s) set_mode(cpu,cpu->spsr); PC&=~3u; } }
+        if(wr){ cpu->r[rd]=res; if(rd==15){ if(s) set_mode(cpu,cpu->spsr); PC&=(CPSR&ARM9_FLAG_T)?~1u:~3u; } }
         return;
     }
     if((insn&0x0C000000)==0x04000000){
@@ -654,10 +688,12 @@ static void exec_arm(ARM9 *cpu, uint32_t insn) {
         uint32_t off=i?decode_shift(cpu,insn).v:(insn&0xFFF);
         uint32_t addr=p?(u?base+off:base-off):base;
         if(l){
-            uint32_t v=b?r8(cpu,addr):r32(cpu,addr);
+            uint32_t v;
+            if(b) v=r8(cpu,addr);
+            else { int rot=(addr&3)*8; v=r32(cpu,addr); if(rot) v=(v>>rot)|(v<<(32-rot)); }
             cpu->r[rd]=v;
-            /* LDR PC: loaded value becomes new PC (word-aligned) */
-            if(rd==15) PC = v & ~3u;
+            /* LDR PC interworks on ARMv5: bit 0 selects Thumb. */
+            if(rd==15){ if(v&1){ CPSR|=ARM9_FLAG_T; PC=v&~1u; } else PC=v&~3u; }
         } else {
             /* STR PC: stored value = current PC = inst+8 (already set) */
             uint32_t v = (rd==15) ? PC : cpu->r[rd];
@@ -687,16 +723,18 @@ static void exec_arm(ARM9 *cpu, uint32_t insn) {
                 /* LDM with PC in list: loaded value IS the new PC.
                  * If S-bit (bit22) set and PC in list → restore CPSR from SPSR */
                 if(i==15) {
-                    PC = v & ~3u;
-                    if(insn & (1<<22))
+                    if(insn & (1<<22)) {
                         set_mode(cpu, cpu->spsr);
+                        PC = v & ((CPSR & ARM9_FLAG_T) ? ~1u : ~3u);
+                    } else if(v & 1) { CPSR|=ARM9_FLAG_T; PC=v&~1u; }
+                    else PC = v & ~3u;
                 }
             } else {
                 w32(cpu,addr,cpu->r[i]);
             }
             addr+=4;
         }
-        if(w) cpu->r[rn]=u?base+(uint32_t)(cnt*4):base-(uint32_t)(cnt*4);
+        if(w && !(l && (rlist>>rn&1))) cpu->r[rn]=u?base+(uint32_t)(cnt*4):base-(uint32_t)(cnt*4);
         return;
     }
     /* MCRR/MRRC — Coprocessor double register transfer (VFP: VMOV Dm, Rd, Rn) */
@@ -1199,15 +1237,11 @@ int arm9_step(ARM9 *cpu) {
 
         PC = inst_addr + 8;
         exec_arm(cpu, i);
-        /* Detect branch-forward-by-0: if PC == inst_addr+8 AND the
-         * instruction is a B/BL, exec_arm intentionally set PC there.
-         * For non-branch instructions, PC==inst_addr+8 means no change. */
-        if (PC == inst_addr + 8) {
-            if ((i & 0x0E000000) == 0x0A000000 && cond_ok(cpu, i >> 28))
-                { /* branch was taken, PC is correct */ }
-            else
-                PC = inst_addr + 4;
-        }
+        /* PC left at inst+8 means no branch - unless the instruction was a
+         * taken branch to exactly there. */
+        if (PC == inst_addr + 8 &&
+            !((i & 0x0E000000) == 0x0A000000 && cond_ok(cpu, i >> 28)))
+            PC = inst_addr + 4;
         cyc = insn_cycles_arm(i);
     }
     cpu->cycles += (uint64_t)cyc;

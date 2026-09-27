@@ -32,6 +32,8 @@ struct ARM9 {
 
     /* Banked registers per mode */
     uint32_t r8_fiq,  r9_fiq,  r10_fiq, r11_fiq, r12_fiq;
+    uint32_t r8_usr,  r9_usr,  r10_usr, r11_usr, r12_usr;  /* R8-R12 outside FIQ */
+    uint32_t r13_usr, r14_usr;                                /* USR and SYS */
     uint32_t r13_fiq, r14_fiq, spsr_fiq;
     uint32_t r13_irq, r14_irq, spsr_irq;
     uint32_t r13_svc, r14_svc, spsr_svc;
