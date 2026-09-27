@@ -888,6 +888,18 @@ static int insn_cycles_thumb(uint16_t insn) {
  *
  * Thumb pipeline: PC = inst+4 during execution. Same logic, smaller delta.
  */
+/* Instruction fetch through the cached host page when there is one. */
+static inline const uint8_t *fetch_host(ARM9 *cpu, uint32_t a) {
+    if (cpu->fetch_ptr && (a & ~0xFFFu) == cpu->fetch_page && cpu->fetch_gen == cpu->cp15.tlb_gen)
+        return cpu->fetch_ptr + (a & 0xFFF);
+    if (!cpu->mem_page) return NULL;
+    const uint8_t *p = cpu->mem_page(cpu->mem_ctx, a);
+    cpu->fetch_ptr = p;
+    cpu->fetch_page = a & ~0xFFFu;
+    cpu->fetch_gen = cpu->cp15.tlb_gen;   /* after the lookup, which may flush */
+    return p ? p + (a & 0xFFF) : NULL;
+}
+
 /* Where execution ran off to, and how it got there. Enabled with VFLASH_WILD=1:
  * the last addresses executed are kept in a ring, and the first time the PC
  * lands outside the regions that hold code - the vectors and ROM stub below
@@ -955,10 +967,12 @@ static void wild_check(ARM9 *cpu, uint32_t addr, uint32_t insn)
 int arm9_step(ARM9 *cpu) {
     int cyc;
     uint32_t inst_addr;
+    const uint8_t *h = fetch_host(cpu, PC);
 
     if (T_FLAG) {
         inst_addr = PC;
-        uint16_t i = r16(cpu, inst_addr);
+        uint16_t i;
+        if (h) memcpy(&i, h, 2); else i = r16(cpu, inst_addr);
         PC = inst_addr + 4;             /* Thumb pipeline: PC = inst+4 */
         exec_thumb(cpu, i);
         if (PC == inst_addr + 4)        /* sequential: advance to next */
@@ -966,7 +980,8 @@ int arm9_step(ARM9 *cpu) {
         cyc = insn_cycles_thumb(i);
     } else {
         inst_addr = PC;
-        uint32_t i = r32(cpu, inst_addr);
+        uint32_t i;
+        if (h) memcpy(&i, h, 4); else i = r32(cpu, inst_addr);
         PC = inst_addr + 8;
 
         {

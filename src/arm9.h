@@ -53,6 +53,11 @@ struct ARM9 {
     void     (*mem_write32)(void *ctx, uint32_t addr, uint32_t val);
     void     (*mem_write16)(void *ctx, uint32_t addr, uint16_t val);
     void     (*mem_write8) (void *ctx, uint32_t addr, uint8_t  val);
+    /* Optional: host memory behind the 4 KB page holding addr, or NULL.
+     * Instruction fetches read through it while cp15.tlb_gen stays put. */
+    const uint8_t *(*mem_page)(void *ctx, uint32_t addr);
+    const uint8_t *fetch_ptr;
+    uint32_t fetch_page, fetch_gen;
 
     /* Callback for UNDEF recovery — copies ROM to RAM for µMORE */
     void     (*undef_callback)(void *ctx);
