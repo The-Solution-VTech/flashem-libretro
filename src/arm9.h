@@ -59,15 +59,6 @@ struct ARM9 {
     const uint8_t *fetch_ptr;
     uint32_t fetch_page, fetch_gen;
 
-    /* Callback for UNDEF recovery — copies ROM to RAM for µMORE */
-    void     (*undef_callback)(void *ctx);
-    int      null_trap_enabled; /* set by Phase 2 to enable NULL trap */
-
-    /* HLE service intercept: called when PC matches a registered address.
-     * Returns 1 if handled (skip instruction execution), 0 to continue. */
-    int      (*hle_intercept)(void *ctx, uint32_t addr);
-    void     *hle_ctx;
-
     /* VFP (Vector Floating-Point) coprocessor state — CP10/CP11 */
     float    vfp_s[32];     /* S0-S31 single-precision registers */
     uint32_t vfp_fpscr;     /* Floating-Point Status and Control Register */

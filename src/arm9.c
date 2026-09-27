@@ -821,7 +821,6 @@ static void exec_thumb(ARM9 *cpu, uint16_t insn) {
 void arm9_reset(ARM9 *cpu) {
     memset(cpu->r,0,sizeof(cpu->r));
     CPSR=ARM9_MODE_SVC|ARM9_FLAG_I|ARM9_FLAG_F; cpu->spsr=0; PC=0; cpu->cycles=0;
-    cpu->null_trap_enabled = 0;
     cp15_reset(&cpu->cp15);
     printf("[ARM9] Reset PC=0x%08X CPSR=0x%08X\n",PC,CPSR);
 }
@@ -900,356 +899,20 @@ static inline const uint8_t *fetch_host(ARM9 *cpu, uint32_t a) {
     return p ? p + (a & 0xFFF) : NULL;
 }
 
-/* Where execution ran off to, and how it got there. Enabled with VFLASH_WILD=1:
- * the last addresses executed are kept in a ring, and the first time the PC
- * lands outside the regions that hold code - the vectors and ROM stub below
- * 0x2000, and the 16 MB of SDRAM - the ring is printed. That names the jump
- * that left the rails, which a PC sitting on the IRQ vector never does. */
-#define WILD_RING 12
-static uint32_t wild_ring[WILD_RING];
-static int      wild_ring_pos;
-static uint32_t wild_jump_from, wild_jump_to;  /* last non-sequential step */
-static int      wild_state = -1;   /* -1 unknown, 0 armed, 1 done, -2 off */
-
-static void wild_check(ARM9 *cpu, uint32_t addr, uint32_t insn)
-{
-    if (wild_state == -1)
-        wild_state = getenv("VFLASH_WILD") ? 0 : -2;
-    if (wild_state != 0)
-        return;
-
-    /* Every entry into the low region is a call into the boot ROM that is not
-     * there. Only 0x1880 is stubbed, so name the others: they are the HLE gaps. */
-    {
-        uint32_t prev = wild_ring[(wild_ring_pos + WILD_RING - 2) % WILD_RING];
-        static int romcall_seen;
-        if (addr < 0x2000 && prev >= 0x10000000 && romcall_seen < 12) {
-            printf("[ROMCALL] %08X from %08X LR=%08X R0=%08X R1=%08X\n",
-                   addr, prev, cpu->r[14], cpu->r[0], cpu->r[1]);
-            romcall_seen++;
-        }
-    }
-    /* Executing the µMORE task table is not "out of range" by address, but it
-     * is just as wrong, so it counts as landing off the rails - and so is the
-     * RTOS halt loop at 0x109D4BBC, which counts to 254 and starts again
-     * forever: reaching it means a check failed somewhere, and the ring says
-     * where it was called from. */
-    if (!(addr >= 0x10B0DF00 && addr < 0x10B0E000) &&
-        !(addr >= 0x109D4BBC && addr <= 0x109D4BCC) &&
-        (addr < 0x2000 || (addr >= 0x10000000 && addr < 0x11000000)))
-        return;
-    printf("[WILD] PC=%08X insn=%08X LR=%08X SP=%08X CPSR=%08X\n",
-           addr, insn, cpu->r[14], cpu->r[13], CPSR);
-    {
-        extern uint32_t vflash_translate(void *vf, uint32_t va);
-        printf("[WILD] VA 0x1880 translates to %08X\n",
-               vflash_translate(cpu->mem_ctx, 0x1880));
-    }
-    {
-        static const uint32_t watch[] = {
-            0x00000018, 0x00000038, 0x1000FF98, 0x1000FFB8,
-            0x10FFF200, 0x10FFF234, 0x10FFF24C, 0x10FFFA58
-        };
-        for (unsigned k = 0; k < sizeof(watch)/sizeof(watch[0]); k++)
-            printf("[WILD] [%08X] = %08X\n", watch[k],
-                   cpu->mem_read32(cpu->mem_ctx, watch[k]));
-    }
-    printf("[WILD] last jump: %08X -> %08X\n", wild_jump_from, wild_jump_to);
-    printf("[WILD] came from:");
-    for (int k = 0; k < WILD_RING; k++) {
-        uint32_t a = wild_ring[(wild_ring_pos + k) % WILD_RING];
-        if (a) printf(" %08X", a);
-    }
-    printf("\n");
-    wild_state = 1;
-}
-
 int arm9_step(ARM9 *cpu) {
+    uint32_t inst_addr = PC;
     int cyc;
-    uint32_t inst_addr;
-    const uint8_t *h = fetch_host(cpu, PC);
-
+    const uint8_t *h = fetch_host(cpu, inst_addr);
     if (T_FLAG) {
-        inst_addr = PC;
         uint16_t i;
         if (h) memcpy(&i, h, 2); else i = r16(cpu, inst_addr);
-        PC = inst_addr + 4;             /* Thumb pipeline: PC = inst+4 */
+        PC = inst_addr + 4;
         exec_thumb(cpu, i);
-        if (PC == inst_addr + 4)        /* sequential: advance to next */
-            PC = inst_addr + 2;
+        if (PC == inst_addr + 4) PC = inst_addr + 2;
         cyc = insn_cycles_thumb(i);
     } else {
-        inst_addr = PC;
         uint32_t i;
         if (h) memcpy(&i, h, 4); else i = r32(cpu, inst_addr);
-        PC = inst_addr + 8;
-
-        {
-            uint32_t prev_addr = wild_ring[(wild_ring_pos + WILD_RING - 1) % WILD_RING];
-            if (inst_addr != prev_addr + 4) {
-                wild_jump_from = prev_addr;
-                wild_jump_to   = inst_addr;
-            }
-        }
-        wild_ring[wild_ring_pos] = inst_addr;
-        wild_ring_pos = (wild_ring_pos + 1) % WILD_RING;
-        if (__builtin_expect(wild_state == -1, 0))
-            wild_state = getenv("VFLASH_WILD") ? 0 : -2;
-        if (__builtin_expect(wild_state == 0, 0))
-            wild_check(cpu, inst_addr, i);
-
-        /* IRQ vector chain trace: log what CPU fetches/executes at 0x18 */
-        if (inst_addr == 0x18 && (CPSR & 0x1F) == 0x12) { /* IRQ mode */
-            static int irq_vec_trace = 0;
-            if (irq_vec_trace < 5) {
-                /* Simulate what LDR PC,[PC,#0xD24] would load */
-                uint32_t pool_va = 0x18 + 8 + 0xD24; /* = 0xD44 */
-                uint32_t pool_val = cpu->mem_read32(cpu->mem_ctx, pool_va);
-                printf("[IRQ-VEC-TRACE] PC=0x18 insn=%08X pool[0x%X]=%08X LR=%08X CPSR=%08X\n",
-                       i, pool_va, pool_val, cpu->r[14], CPSR);
-                irq_vec_trace++;
-            }
-        }
-        /* Also trace first instruction after vector jump */
-        if (inst_addr >= 0x1000FF90 && inst_addr <= 0x1000FFD0 && (CPSR & 0x1F) == 0x12) {
-            static int chain_trace = 0;
-            if (chain_trace < 5) {
-                printf("[IRQ-CHAIN] PC=%08X insn=%08X\n", inst_addr, i);
-                chain_trace++;
-            }
-        }
-        if (inst_addr >= 0x10FFF200 && inst_addr <= 0x10FFF240) {
-            static int handler_trace = 0;
-            if (handler_trace < 5) {
-                printf("[IRQ-HANDLER] PC=%08X insn=%08X CPSR=%08X\n", inst_addr, i, CPSR);
-                handler_trace++;
-            }
-        }
-
-        /* Game init trace: log BL calls and returns */
-        /* NULL pointer trap: when game code (LR in BOOT.BIN) calls through
-         * a NULL pointer into BSS, auto-return to skip the call.
-         * Only active for calls FROM BOOT.BIN code (0x10C00000+). */
-        /* Trace init BLs and scheduler */
-        {
-            /* Trace memcpy: focus on CMN+BNE at 0x328-0x330 */
-            if (inst_addr >= 0x324 && inst_addr <= 0x334) {
-                static int fn_log = 0;
-                if (fn_log < 10) {
-                    printf("[FN2B4] PC=%08X insn=%08X R2=%08X CPSR=%08X Z=%d\n",
-                           inst_addr, i, cpu->r[2], CPSR, (CPSR >> 30) & 1);
-                    fn_log++;
-                }
-            }
-            if (inst_addr == 0x340) {
-                static int mcpy_log = 0;
-                if (mcpy_log < 3) {
-                    printf("[MCPY] STR: *0x%08X = 0x%08X (iter %d)\n",
-                           cpu->r[3], cpu->r[2], mcpy_log);
-                    mcpy_log++;
-                }
-            }
-            /* Trace when 0x10010234 gets written */
-            if (inst_addr == 0x340 && cpu->r[3] == 0x10010234) {
-                printf("[MCPY] *** Writing scheduler: *0x10010234 = 0x%08X ***\n", cpu->r[2]);
-            }
-            /* Check ram[0x10234] after each init BL returns */
-            if (inst_addr >= 0x118 && inst_addr <= 0x138) {
-                uint32_t chk = cpu->mem_read32(cpu->mem_ctx, 0x10010234);
-                static uint32_t last_chk = 0;
-                if (chk != last_chk) {
-                    printf("[CHK] at PC=%08X: ram[0x10234]=%08X\n", inst_addr, chk);
-                    last_chk = chk;
-                }
-            }
-            if (inst_addr >= 0x118 && inst_addr <= 0x138 && (i & 0x0F000000) == 0x0B000000) {
-                static int bl_log = 0;
-                if (bl_log < 10) {
-                    int32_t off = i & 0xFFFFFF;
-                    if (off & 0x800000) off |= (int32_t)0xFF000000;
-                    uint32_t target = inst_addr + 8 + (uint32_t)(off * 4);
-                    printf("[INIT-BL] PC=%08X → BL 0x%08X\n", inst_addr, target);
-                    bl_log++;
-                }
-            }
-            /* Log scheduler entry and BL calls from init */
-            if (inst_addr == 0x10010234) {
-                printf("[SCHED] Entry: insn=%08X SP=%08X\n", i, cpu->r[13]);
-            }
-            /* Trace BLs from scheduler init code */
-            if (inst_addr >= 0x10010240 && inst_addr <= 0x10010290 &&
-                (i & 0x0F000000) == 0x0B000000) {
-                static int sbl = 0;
-                if (sbl < 10) {
-                    int32_t boff = i & 0xFFFFFF;
-                    if (boff & 0x800000) boff |= (int32_t)0xFF000000;
-                    uint32_t tgt = inst_addr + 8 + (uint32_t)(boff * 4);
-                    printf("[SCHED-BL] 0x%08X → BL 0x%08X R0=%08X R1=%08X\n",
-                           inst_addr, tgt, cpu->r[0], cpu->r[1]);
-                    sbl++;
-                }
-            }
-            /* Track PLL wait loop (VA 0x18E0, not 0x100018E0) */
-            if (inst_addr == 0x18E0 || inst_addr == 0x100018E0) {
-                static int pll_log = 0;
-                if (pll_log < 3) {
-                    printf("[PLL-WAIT] R0=%08X R3=%08X SP=%08X\n",
-                           cpu->r[0], cpu->r[3], cpu->r[13]);
-                    pll_log++;
-                }
-            }
-            if (inst_addr == 0x18E4 || inst_addr == 0x100018E4) {
-                static int pll_ret = 0;
-                if (pll_ret < 3)
-                    printf("[PLL-RET] R0=%08X (bit7=%d)\n", cpu->r[0], (cpu->r[0]>>7)&1);
-                pll_ret++;
-            }
-            /* Track ALL branches from µMORE kernel area */
-            if (inst_addr >= 0x10090000 && inst_addr < 0x10B00000) {
-                int is_bl = (i & 0x0F000000) == 0x0B000000;
-                int is_blx_reg = (i & 0x0FFFFFF0) == 0x012FFF30; /* BLX Rn */
-                int is_bx = (i & 0x0FFFFFF0) == 0x012FFF10; /* BX Rn */
-                if (is_bl || is_blx_reg || is_bx) {
-                    static int bl_trace = 0;
-                    if (bl_trace < 30) {
-                        uint32_t target = 0;
-                        if (is_bl) {
-                            int32_t imm = i & 0xFFFFFF;
-                            if (imm & 0x800000) imm -= 0x1000000;
-                            target = inst_addr + 8 + imm * 4;
-                        } else {
-                            target = cpu->r[i & 0xF];
-                        }
-                        printf("[EVPUMP] PC=%08X %s 0x%08X R0=%08X\n",
-                               inst_addr, is_bl?"BL":is_blx_reg?"BLX":"BX",
-                               target, cpu->r[0]);
-                        bl_trace++;
-                    }
-                }
-            }
-            /* Trace first instructions after game task launch */
-            {
-                static int gt_trace = 0;
-                static int gt_active = 0;
-                if (inst_addr == 0x109D1BD0 && !gt_active) {
-                    gt_active = 1;
-                    gt_trace = 0;
-                    printf("[GT-TRACE] Game entry hit!\n");
-                }
-                /* Reset trace when game loop is forced */
-                if (inst_addr == 0x109D1CE0 && gt_trace > 1000) {
-                    gt_active = 1;
-                    gt_trace = 0;
-                    printf("[GT-TRACE] Game loop hit — resetting trace!\n");
-                }
-                if (gt_active && gt_trace < 50000) {
-                    static uint32_t gt_last_lr = 0;
-                    static uint32_t gt_last_pc = 0;
-                    /* Log function entries (LR change), skip IRQ/FIQ handler noise */
-                    if (cpu->r[14] != gt_last_lr &&
-                        inst_addr >= 0x10000000 &&
-                        !(inst_addr >= 0xD00 && inst_addr < 0xE00)) {
-                        printf("[GT] %08X: R0=%08X LR=%08X SP=%08X (#%d)\n",
-                               inst_addr, cpu->r[0], cpu->r[14], cpu->r[13], gt_trace);
-                        gt_last_lr = cpu->r[14];
-                    }
-                    gt_last_pc = inst_addr;
-                    gt_trace++;
-                    if (inst_addr < 0x100 && inst_addr != 0x08 && inst_addr != 0x18 && inst_addr != 0x1C) {
-                        printf("[GT] CRASH at PC=%08X!\n", inst_addr);
-                    }
-                }
-            }
-            /* Track when game code (0x10C00000+) transitions to low addr */
-            {
-                static int game_started = 0, crash_log = 0;
-                if (inst_addr >= 0x10C00000 && inst_addr < 0x10E00000)
-                    game_started = 1;
-                if (game_started && !crash_log && inst_addr < 0x10001000 &&
-                    inst_addr != 0x18 && inst_addr != 0x1C &&
-                    !(inst_addr >= 0xD00 && inst_addr < 0xE00)) { /* ROM FIQ handler */
-                    printf("[GAME-CRASH] PC=0x%08X insn=0x%08X LR=0x%08X SP=0x%08X CPSR=0x%08X\n",
-                           inst_addr, i, cpu->r[14], cpu->r[13], CPSR);
-                    crash_log = 1;
-                }
-            }
-            /* Trace task_start function */
-            if (inst_addr >= 0x10085E50 && inst_addr <= 0x10085F50) {
-                static int ts_log = 0;
-                if (ts_log < 30) {
-                    printf("[TSTART] PC=%08X insn=%08X R0=%08X R1=%08X R3=%08X SP=%08X\n",
-                           inst_addr, i, cpu->r[0], cpu->r[1], cpu->r[3], cpu->r[13]);
-                    ts_log++;
-                }
-            }
-        }
-
-        /* Catch jumps to invalid addresses:
-         * - NULL (address 0)
-         * - Kernel vector area (0x10000000-0x10000100)
-         * - Addresses outside any valid memory region (> 0x11000000 and not ROM/peripherals) */
-        if ((inst_addr == 0 ||
-             (inst_addr >= 0x10000000 && inst_addr < 0x10000100) ||
-             (inst_addr > 0x11000000 && inst_addr < 0x80000000) ||
-             (inst_addr >= 0x00200000 && inst_addr < 0x0FFE0000))
-            && cpu->null_trap_enabled) {
-            static int null_blx = 0;
-            if (null_blx < 10)
-                printf("[NULL-BLX] PC=0x%08X LR=0x%08X R0=0x%08X SP=0x%08X\n",
-                       inst_addr, cpu->r[14], cpu->r[0], cpu->r[13]);
-            null_blx++;
-            cpu->r[0] = 0;
-            /* Check if LR and SP are valid */
-            uint32_t lr = cpu->r[14];
-            uint32_t sp = cpu->r[13];
-            int lr_valid = (lr >= 0x10000100 && lr < 0x11000000) ||
-                           (lr > 0 && lr < 0x00200000);
-            int sp_valid = (sp >= 0x10000000 && sp < 0x11000000);
-            if (lr_valid && sp_valid && lr != inst_addr) {
-                PC = lr & ~3u;
-            } else {
-                /* LR or SP corrupted — jump to game-loop anchor.
-                 * IRQ must stay enabled so timer can drive recovery;
-                 * a B . stub at 0x109D1CE0 is lazy-installed by vflash. */
-                PC = 0x109D1CE0;
-                cpu->r[13] = 0x10B8DAC0; /* safe SP */
-                cpu->cpsr = 0x00000013; /* SVC, IRQ enabled */
-            }
-            cpu->cycles += 1;
-            return 1;
-        }
-
-        /* HLE service intercept: check BEFORE null trap (services are at zero-init addresses) */
-        if (cpu->hle_intercept && cpu->hle_intercept(cpu->hle_ctx, inst_addr)) {
-            cpu->cycles += 1;
-            return 1;
-        }
-
-        if (i == 0 && cpu->null_trap_enabled && inst_addr >= 0x10000100 && inst_addr < 0x10C00000) {
-            static int ntp = 0;
-            static uint32_t last_trap = 0;
-            uint32_t lr = cpu->r[14] & ~3u;
-            if (ntp < 50 && inst_addr != last_trap)
-                printf("[NULL-TRAP] 0x%08X (LR=0x%08X R0=0x%08X)\n", inst_addr, lr, cpu->r[0]);
-            last_trap = inst_addr;
-            ntp++;
-            cpu->r[0] = 0;
-            /* Detect NOP-sled looping: if we've been here >1000 times, break out */
-            {
-                static int trap_count = 0;
-                trap_count++;
-                if (trap_count > 1000) {
-                    PC = 0x10FFF000; /* escape to idle */
-                    trap_count = 0;
-                    cpu->cycles += 1;
-                    return 1;
-                }
-            }
-            PC = lr;
-            cpu->cycles += 1;
-            return 1;
-        }
-
         PC = inst_addr + 8;
         exec_arm(cpu, i);
         /* PC left at inst+8 means no branch - unless the instruction was a
@@ -1285,17 +948,7 @@ void arm9_irq(ARM9 *cpu) {
 }
 
 void arm9_fiq(ARM9 *cpu) {
-    static int fiq_log = 0;
-    if (fiq_log < 200) {
-        printf("[ARM9-FIQ] CPSR=%08X F=%d → %s PC=%08X\n",
-               CPSR, (CPSR&ARM9_FLAG_F)?1:0, (CPSR&ARM9_FLAG_F)?"BLOCKED":"DELIVER", PC);
-    }
-    if(CPSR&ARM9_FLAG_F) { fiq_log++; return; }
-    if (fiq_log < 200) {
-        printf("[ARM9-FIQ] Delivering: PC=%08X→0x%08X CPSR=%08X→FIQ\n",
-               PC, vec_base(cpu)+0x1C, CPSR);
-        fiq_log++;
-    }
+    if(CPSR&ARM9_FLAG_F) return;
     save_bank(cpu,CPSR&0x1F);
     cpu->spsr_fiq = CPSR;
     cpu->r14_fiq  = PC + 4;
@@ -1316,33 +969,6 @@ void arm9_swi(ARM9 *cpu) {
 }
 
 void arm9_undef(ARM9 *cpu) {
-    static int undef_count = 0;
-    if (undef_count < 20) {
-        uint32_t bad_pc = PC - 8;
-        uint32_t insn = cpu->mem_read32(cpu->mem_ctx, bad_pc);
-        fprintf(stderr, "[UNDEF] #%d PC=0x%08X insn=0x%08X LR=0x%08X\n",
-                undef_count, bad_pc, insn, cpu->r[14]);
-    }
-    undef_count++;
-
-    /* ROM boot recovery: if UNDEF fires with BOOT.BIN pre-loaded,
-     * the ROM failed to load BOOT.BIN via ATAPI. Redirect to BOOT.BIN
-     * entry at 0x10C00010 (V.Flash BOOT format trampoline).
-     * Also trigger ROM→RAM copy callback if set (for µMORE kernel). */
-    if (undef_count == 1 && (CPSR & 0x1F) == ARM9_MODE_SVC) {
-        /* ROM init hit a NULL function pointer (garbage from SDRAM calibration).
-         * Copy ROM kernel code to RAM to fix this, then RESUME ROM init
-         * (don't redirect to BOOT.BIN). This allows ROM init's task
-         * registration code to run after disc load + BSS clear. */
-        if (cpu->undef_callback)
-            cpu->undef_callback(cpu->mem_ctx);
-        /* NOP the faulting instruction area so it becomes harmless */
-        cpu->mem_write32(cpu->mem_ctx, PC - 8, 0xE1A00000); /* NOP at fault addr */
-        fprintf(stderr, "[UNDEF] Patched + resuming ROM init at 0x%08X\n", PC - 8);
-        PC = PC - 8; /* re-execute the (now NOP'd) instruction */
-        return;
-    }
-
     save_bank(cpu,CPSR&0x1F);
     cpu->spsr_und = CPSR;
     cpu->r14_und  = PC - 4;

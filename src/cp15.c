@@ -113,9 +113,8 @@ void cp15_write(CP15 *cp, uint32_t crn, uint32_t crm, uint32_t op2, uint32_t val
             break;
         case 8:  /* TLB operations — invalidate TLB */
             /* CRm=7: unified, CRm=5: I-TLB, CRm=6: D-TLB
-             * op2=0: invalidate all, op2=1: invalidate by MVA
-             * Signal to vflash.c's TLB cache via global flag */
-            cp->tlb_flush_needed = 1;
+             * op2=0: invalidate all, op2=1: invalidate by MVA - hw.c's
+             * whole TLB goes either way */
             cp->tlb_gen++;
             break;
         case 9:  /* TCM */

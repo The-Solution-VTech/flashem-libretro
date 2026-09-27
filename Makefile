@@ -2,9 +2,9 @@ CC      = gcc
 CFLAGS  += -O2 -Wall -Wextra -Iinclude $(shell sdl2-config --cflags)
 LDFLAGS += $(shell sdl2-config --libs) -ljpeg -lm
 
-SRCS = src/main.c src/vflash.c src/arm9.c src/cp15.c src/cdrom.c \
-       src/mjp.c src/audio.c src/ptx.c src/ztimer.c src/disasm.c \
-       src/debugger.c src/jit.c
+SRCS = src/main.c src/vflash.c src/hw.c src/arm9.c src/cp15.c src/cdrom.c src/cdsp.c src/ge.c \
+       src/audio.c src/ptx.c src/disasm.c src/debugger.c src/zevio_dsp.c src/zsp400.c \
+       src/midi.c src/cdda_dma.c
 OBJS = $(SRCS:.c=.o)
 BIN  = flashem
 

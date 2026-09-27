@@ -25,16 +25,20 @@ CORE_DIR := .
 SOURCES_C := \
 	$(CORE_DIR)/src/flashem_libretro.c \
 	$(CORE_DIR)/src/vflash.c \
+	$(CORE_DIR)/src/hw.c \
+	$(CORE_DIR)/src/zevio_dsp.c \
+	$(CORE_DIR)/src/zsp400.c \
+	$(CORE_DIR)/src/midi.c \
+	$(CORE_DIR)/src/cdda_dma.c \
 	$(CORE_DIR)/src/arm9.c \
 	$(CORE_DIR)/src/cp15.c \
 	$(CORE_DIR)/src/cdrom.c \
-	$(CORE_DIR)/src/mjp.c \
+	$(CORE_DIR)/src/cdsp.c \
+	$(CORE_DIR)/src/ge.c \
 	$(CORE_DIR)/src/audio.c \
 	$(CORE_DIR)/src/ptx.c \
-	$(CORE_DIR)/src/ztimer.c \
 	$(CORE_DIR)/src/disasm.c \
-	$(CORE_DIR)/src/debugger.c \
-	$(CORE_DIR)/src/jit.c
+	$(CORE_DIR)/src/debugger.c
 
 LIBS := -ljpeg -lm
 fpic :=
