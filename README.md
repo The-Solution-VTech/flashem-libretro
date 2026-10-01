@@ -1,156 +1,305 @@
 # FlashEm
 
-FlashEm is an emulator for the VTech V.Flash (V.Smile Pro) educational console (2006).
+FlashEm is an experimental emulator for the VTech V.Flash, also sold as the
+V.Smile Pro, educational console (2006). It provides an SDL2 standalone
+application and a libretro core.
 
-It emulates the hardware and runs the console's own boot ROM: the ARM core
-boots `70004.bin`, the µMORE kernel starts, and everything on screen is what
-that code draws through the emulated video engine. There is no high-level
-emulation of the operating system or the games.
+The emulator runs the console's original boot ROM and each disc's own ARM code.
+The ROM boots µMORE, mounts the disc through the emulated CD hardware, and loads
+the game's `0SYSTEM/BOOT.BIN`. Graphics, audio, and movies come from the emulated
+devices; the original movie-decoder firmware runs on a ZSP400 interpreter.
+There is no high-level replacement for the operating system or games.
 
-## Status
+## Current status
 
-- Boots the real ROM through SDRAM calibration, the power-on check, the warm
-  reset and the kernel, which prints its banner on the first UART.
-- Plays the VTech and V.Smile Pro logos and reaches the system menu, rendered
-  by the video engine model (tile layers, colour layers, palette, scroll).
-- **Games do not run yet.** The CD drive is not emulated: the system menu asks
-  for a disc. The V.Flash drives the CD servo and decoder directly (Vitec's
-  "MAIKO" driver), and every game's `BOOT.BIN` brings its own copy of that
-  driver, so the drive has to be emulated at the hardware level.
-- No sound output yet, no save states.
+Games now boot, menus respond to input, and 3D gameplay renders. The project is
+still under active reverse engineering; these results do not establish complete
+playability across every title, revision, or game mode.
 
-## Hardware
+- **Boot and disc access:** original ROM startup, game-kernel boot, CD servo and
+  decoder, seeking, sector DMA, and streaming-ring protection are implemented.
+- **Graphics:** tile and colour layers, textured sprites and triangles, skeletal
+  animation, lighting, depth, blending, near-plane clipping, and surface copies
+  are implemented in a software renderer. Dingo Rallye reaches its menus and
+  renders the race, kart, and HUD. Other tested titles include Cars, Bratz,
+  Spider-Man, The Incredibles, Disney Princess, Scooby-Doo, SpongeBob, Shrek,
+  Wacky Race, and Multisports.
+- **Movies:** native DSP firmware decodes MJP video into planar YUV, which the
+  video engine composites with game graphics. Validation includes Multisports
+  playback and movie samples from Cars, Spider-Man, SpongeBob, Wacky Race,
+  Shrek, and Scooby-Doo, plus complete-movie and streaming-ring tests.
+- **Audio:** BIOS sounds, PCM music, pitched/looped sample playback, Apple IMA4
+  effects and movie streams, and the CDDA DMA path are implemented. Both
+  frontends output 44.1 kHz stereo audio.
+- **Frontends:** Linux/WSL and Windows standalone/core builds have been exercised.
+  The libretro Makefile also has targets for other platforms; those do not imply
+  equivalent runtime validation.
 
-| Component | Details |
-|-----------|---------|
-| SoC | LSI Logic ZEVIO 1020 (the TI-Nspire Classic's chip), ARM926EJ-S @ 150MHz |
-| RAM | 16MB SDRAM |
-| Media | CD-ROM, ISO 9660, no copy protection |
-| Video | Video engine at 0xB8000000: 4 tile layers + 2 BGR555 layers, PAL/NTSC |
-| OS | µMORE v4.0 RTOS (ACCESS Co.) |
-| Boot ROM | 70004.bin (2MB, required) |
+### Known limitations
 
-What is known about each device, and how it was worked out, is written next to
-its model in [src/hw.c](src/hw.c). Firebird (the TI-Nspire emulator) is the
-reference for the parts the two machines share; where the V.Flash differs, the
-comments say so.
+- Compatibility testing consists of captured scenes and scripted routes, not
+  complete playthroughs. Rendering and controller-register details remain
+  partially inferred.
+- CPU/device timing, DSP scheduling, and some CD behavior are approximate.
+  Performance varies by scene and host; full speed is not guaranteed.
+- Audio envelopes, finite-duration master-volume ramps, precise gain and
+  interpolation, and sound interrupt generation remain incomplete.
+- There are no save states or serialization-based features such as rewind,
+  run-ahead, or netplay. The libretro core also has no reset implementation,
+  disk swapping, cheats, core options, or persistent save-memory interface.
+  Reload the content to restart it.
+- The libretro core currently advertises 60 Hz/NTSC timing even though framebuffer
+  dimensions follow the video-engine registers, including PAL-sized rasters.
 
-| Address | Device |
-|---------|--------|
-| 0x00000000 | Boot ROM |
-| 0x10000000 | SDRAM (16MB) |
-| 0x8FFF0000 | SDRAM controller |
-| 0x90000000, 0x900D0000 | GPIO banks A and B (B0 bit 0: powered on) |
-| 0x90010000, 0x900C0000 | Timer pairs (IRQ lines 5 and 6) |
-| 0x90020000, 0x90030000 | UARTs |
-| 0x90090000 | RTC, scratch registers kept across a reset |
-| 0x900A0000 | Misc: reset, boot status, timer interrupts, keys (0x18) |
-| 0x900B0000 | PMU / clocks |
-| 0xA1000000 | SPI master (no device attached yet) |
-| 0xA8000000 | Display output controller |
-| 0xB8000000 | Video engine; palette RAM at 0xB8000800 (IRQ line 21) |
-| 0xC4000000 | CD servo bus and CD-ROM decoder (not emulated yet) |
-| 0xDC000000 | Interrupt controller |
-| 0xF8000000 | 8KB shared RAM |
+## Required files
 
-## Controls
+Supply your own **`70004.bin` boot ROM (2 MiB)** and disc image. ROMs, games, and
+extracted DSP firmware are not supplied. Normal gameplay loads the DSP firmware
+from the game through the emulated hardware; no separate DSP file is needed.
 
-| Key | V.Flash |
-|-----|---------|
-| Arrow keys | Up / Down / Left / Right |
-| Z / X / C / V | Red / Yellow / Green / Blue |
-| Enter | Enter |
-| F2 | Pause / resume debugger |
-| F5 | Save screenshot (BMP) |
-| F11 | Toggle fullscreen |
-| Esc | Quit |
+The boot ROM is searched for in this order:
 
-Which bits of the key register (0x900A0018) belong to which button is only
-partly known; see `hw_keys()` in src/hw.c.
+1. `<system>/flashem/70004.bin`, then `<system>/70004.bin`, when a libretro
+   frontend supplies its system directory.
+2. The path in the `FLASHEM_BIOS` environment variable.
+3. `70004.bin` in the current working directory.
 
-## libretro core
+Use a **raw BIN image with its CUE sheet** and open the `.cue`. Keep the referenced
+BIN beside the CUE. The loader reads tracks from a single-file CUE; multi-file
+CUE layouts are not implemented. Extract ZIP archives before loading content.
 
-```bash
-make -f Makefile.libretro platform=unix   # flashem_libretro.so
-```
-
-The core is the emulator without the SDL frontend: `vflash_run_frame()` once per
-`retro_run`, and the framebuffer handed over as XRGB8888 at 4:3 - 320x240, or
-320x288 / 352x288 on a PAL system, as the video engine is programmed. It takes
-`.cue`, `.bin` and `.iso` by path (`need_fullpath`), because the emulator opens
-the disc itself. Put `70004.bin` in the frontend's system directory.
-
-| RetroPad | V.Flash |
-|----------|---------|
-| D-pad | Up / Down / Left / Right |
-| A | Red |
-| B | Yellow |
-| X | Green |
-| Y | Blue |
-| Start | Enter |
-
-Save states, rewind, run-ahead and netplay are out until the emulator grows a
-serialiser.
+The loader also accepts `.bin` and `.iso` paths, but a 2048-byte-sector ISO lacks
+the raw EDC/ECC bytes used by the guest's software checks, and the emulator does
+not reconstruct them. An ISO opening successfully does not mean it will boot.
+Opening a BIN directly also loses the CUE's track metadata.
 
 ## Build
 
-```bash
-sudo apt install libsdl2-dev
-make
+Run these commands from this repository's directory. The emulator needs a C
+compiler with C11 atomics, GNU Make, and the math library. The standalone frontend
+also needs SDL2 development files. The libretro core does not need SDL2, and
+normal emulation does not require a host JPEG library.
+
+### Linux / WSL
+
+On Debian/Ubuntu:
+
+```sh
+sudo apt install build-essential libsdl2-dev
+make -j
+make -f Makefile.libretro platform=unix -j
 ```
 
-The core needs only a C compiler and libm.
+`make` builds `flashem` and the command-line tools. The second command builds
+`flashem_libretro.so`. To build only the standalone emulator, use `make flashem`.
 
-## Run
+### Windows with MSYS2 MinGW64
 
-```bash
-./flashem game.cue                  # BIN/CUE image
-./flashem game.iso                  # ISO image
-./flashem --dbg game.cue            # debugger, paused
-./flashem --dbg-run game.cue        # debugger, running
-./flashem --headless game.cue       # no display
-./flashem --scale 3 game.cue        # 3x window
+In an MSYS2 **MinGW64** shell:
+
+```sh
+pacman -S --needed make mingw-w64-x86_64-gcc mingw-w64-x86_64-SDL2
+make platform=win SDL2_PREFIX= -j
+make -f Makefile.libretro platform=win -j
 ```
 
-The boot ROM `70004.bin` is looked for in this order:
+The outputs are `flashem.exe`, the tools as `.exe` files, and
+`flashem_libretro.dll`. For standalone use outside MSYS2, keep the matching
+`SDL2.dll` beside `flashem.exe` (available in MSYS2's `mingw64/bin` directory).
+The libretro core does not use that DLL.
 
-1. the frontend's system directory, as `<system>/flashem/70004.bin` or `<system>/70004.bin` (libretro core)
-2. `$FLASHEM_BIOS`, a full path to the file
-3. `70004.bin` in the current directory
+### Cross-compile Windows builds from Linux / WSL
 
-### Diagnostics
+```sh
+sudo apt install build-essential gcc-mingw-w64-x86-64 curl
+bash tools/get_sdl2_mingw.sh
+make platform=win -j
+make -f Makefile.libretro platform=win -j
+```
+
+The SDL helper downloads the MinGW development package to `~/vfg/deps`, matching
+the standalone Makefile's default. Set `SDL2_PREFIX` to the package's
+`x86_64-w64-mingw32` directory to use a different location. This build copies
+`SDL2.dll` alongside the standalone executable.
+
+Standalone Linux and Windows objects use separate suffixes. Libretro objects
+all use `.lr.o`, so run `make -f Makefile.libretro platform=<target> clean`
+before switching core target platforms. Header dependencies are only partially
+listed; use a clean rebuild after changing shared structures in headers.
+
+## Run the standalone emulator
+
+With `70004.bin` in the current directory:
+
+```sh
+./flashem "path/to/game.cue"
+./flashem --scale 3 "path/to/game.cue"
+./flashem --dbg "path/to/game.cue"       # debugger paused at boot
+./flashem --dbg-run "path/to/game.cue"   # debugger running
+```
+
+Windows PowerShell, with an explicit ROM path:
+
+```powershell
+$env:FLASHEM_BIOS = 'C:\path\to\70004.bin'
+.\flashem.exe 'C:\path\to\game.cue'
+```
+
+`--scale` accepts 1–4 (default 2). `--help` lists the command-line options.
+Accelerated boot is enabled by default and discards audio while active. Set
+`VFLASH_FASTBOOT=0` to run startup at normal pacing. The debugger disables the
+standalone frontend's accelerated pacing.
+
+### Controls
+
+| Keyboard | V.Flash | RetroPad (port 1) |
+|----------|---------|------------------|
+| Arrow keys | Joystick directions | D-pad |
+| Z | Red | A |
+| X | Yellow | B |
+| C | Green | X |
+| V | Blue | Y |
+| Enter | Enter / OK | Start |
+
+In the standalone frontend, F5 saves `screenshot.bmp`, F11 toggles fullscreen,
+and Esc quits. F2 pauses/resumes when started with `--dbg` or `--dbg-run`.
+Use a libretro frontend for host gamepad mapping. Some game prompts require a
+colour button rather than Enter.
+
+## libretro core
+
+Load the built core in a libretro frontend, put `70004.bin` in its system
+directory, and load the game's `.cue`. The accompanying
+`flashem_libretro.info` provides frontend metadata.
+
+The core opens content by filesystem path (`need_fullpath`) and requires a disc
+path. It supplies software-rendered XRGB8888 video at a 4:3 display aspect and
+44.1 kHz stereo audio. Framebuffer dimensions follow the guest's video settings,
+up to 512×288; games commonly use 512×240. Input currently comes from the first
+RetroPad's D-pad and buttons, as mapped above.
+
+## Hardware and source layout
+
+The V.Flash uses an LSI Logic ZEVIO 1020 with an ARM926EJ-S CPU at 150 MHz,
+16 MiB SDRAM, and CD-ROM media. Its boot ROM and games run the µMORE RTOS.
+
+| Source | Responsibility |
+|--------|----------------|
+| [src/arm9.c](src/arm9.c), [src/cp15.c](src/cp15.c) | ARM/Thumb interpreter and MMU |
+| [src/hw.c](src/hw.c) | Memory map, timers, interrupts, GPIO, UART/controller reports, CD decoder, and video scanout |
+| [src/cdrom.c](src/cdrom.c), [src/cdsp.c](src/cdsp.c) | Disc images, track/subcode data, and CD servo model |
+| [src/ge.c](src/ge.c) | Command-list graphics engine and software rasterizer |
+| [src/zevio_dsp.c](src/zevio_dsp.c), [src/zsp400.c](src/zsp400.c) | DSP DMA/mailboxes and ZSP400 instruction execution |
+| [src/midi.c](src/midi.c), [src/cdda_dma.c](src/cdda_dma.c) | Sound voices, PCM/IMA4 playback, and CDDA transfers |
+| [src/audio.c](src/audio.c) | Audio buffering and frontend output |
+| [src/vflash.c](src/vflash.c) | Frontend-facing machine API and ROM lookup |
+| [src/main.c](src/main.c), [src/flashem_libretro.c](src/flashem_libretro.c) | SDL2 and libretro frontends |
+
+The graphics command engine is at `0xA8000000`; display composition is handled
+by the video engine at `0xB8000000`. Other major devices include sound at
+`0xB0000000`, memory DMA at `0xBC000000`, DSP DMA at `0xC0000000`, and the CD
+decoder/servo interface at `0xC4000000`.
+
+Reverse-engineering evidence and unresolved register behavior are documented
+next to the device models. [CLAUDE.md](CLAUDE.md) contains more detailed working
+notes, including historical findings and references to local research fixtures.
+
+## Diagnostics and development
+
+For a bounded headless run on Linux/WSL:
+
+```sh
+FLASHEM_BIOS=/path/to/70004.bin \
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
+VFLASH_EXIT=3601 VFLASH_SHOT_FRAME=1800,3600 \
+VFLASH_SHOT='frame-%d.ppm' \
+./flashem --headless /path/to/game.cue > run.log 2>&1
+```
+
+`--headless` skips the window but still initializes SDL video/audio; the dummy
+drivers allow runs without display or audio devices. Choose a writable screenshot
+path explicitly, especially on Windows. Headless runs continue until an exit
+condition is supplied.
 
 | Variable | Effect |
 |----------|--------|
-| `VFLASH_LOG=<file>` | Send stdout (device log, `[HW?]` unmodelled accesses, UART text) to a file |
-| `VFLASH_SHOT_FRAME=N` | Headless: save `/tmp/vflash_screen.ppm` at frame N (default 50) |
-| `VFLASH_RAMDUMP=<file>` | Dump SDRAM (and `<file>.sram`, the palette RAM) at `VFLASH_RAMDUMP_FRAME` (default 600) |
-| `VFLASH_TRACEPC=<hex>[,N]` | Print registers the first N times the instruction at that address runs |
-| `VFLASH_IOHIST=<from>,<to>` | Histogram of device accesses by address and PC over a frame range |
-| `VFLASH_KEYS=<hex>@<from>-<to>` | Hold raw key-register bits over a frame range |
+| `VFLASH_LOG=<file>` | Redirect standalone stdout after initialization; shell redirection also captures startup output and stderr |
+| `VFLASH_EXIT=N` | End the process at the specified emulated frame |
+| `VFLASH_SHOT_FRAME=N[,N...]` | Headless screenshot frames in ascending order; default 50 |
+| `VFLASH_SHOT=<path>` | Headless PPM path; `%d` inserts the frame number; default `/tmp/vflash_screen.ppm` |
+| `VFLASH_FASTBOOT=0` | Disable accelerated boot |
+| `VFLASH_RTC=<unix-seconds>` | Fix the RTC's starting time for reproducible runs |
+| `VFLASH_INPUT=<hex>@<from>-<to>[;...]` | Script frontend button masks; e.g. `100@3100-3110` presses Enter |
+| `VFLASH_KEYS=<hex>@<from>-<to>` | Force raw key-register bits, distinct from controller reports |
+| `VFLASH_RAMDUMP=<file>` | Dump SDRAM and palette RAM (`<file>.sram`) at `VFLASH_RAMDUMP_FRAME` (default 600) |
+| `VFLASH_TRACEPC=<hex>[:<hex>...][,N]` | Trace registers at selected instruction addresses, with an optional hit limit |
+| `VFLASH_IOHIST=<from>,<to>[,page]` | Collect MMIO access counts by address and PC |
+| `VFLASH_CDLOG=1` | Trace CD servo/decoder activity |
+| `VFLASH_GELOG=1` | Report unhandled graphics commands |
+| `VFLASH_GECAP=<file>,<frame>[,<frames>]` | Capture graphics state, RAM, and command-list inputs for replay |
 
-## Debugger
+`VFLASH_INPUT` uses the button masks in [src/vflash.h](src/vflash.h): directions
+`01/02/04/08`, red/yellow/green/blue `10/20/40/80`, and Enter `100` (hex).
+Other device-specific tracing switches are documented in the source.
 
+### Debugger
+
+Start with `--dbg` or `--dbg-run`, then enter commands in the terminal:
+
+```text
+s [N]        step N instructions     c            continue
+n            step over              b <addr>     set breakpoint
+bc <a>|all   clear breakpoint(s)     bl           list breakpoints
+r            registers              pc           current instruction
+d <a> [N]    disassemble             m <a> [N]    memory dump
+bt           stack dump             setreg r0=1  write register
+q            quit
 ```
-s [N]      step N instructions    c         continue
-n          step over              b <addr>  set breakpoint
-bc <a>|all clear BP(s)           bl        list BPs
-r          registers              pc        current instruction
-d <a> [N]  disassemble            m <a> [N] memory dump
-bt         stack dump              setreg r0=val
-q          quit
+
+### Tools and tests
+
+The default standalone build includes disc/asset utilities and a graphics replay
+tool:
+
+```sh
+./disc_analyze game.iso
+./disc_compare first.iso second.iso
+./mjp_extract game.iso frames/
+./ptx_extract game.iso images/
+./gereplay capture.bin output.ppm
 ```
 
-## Tools
+The disc/asset utilities above operate on ISO payload images; they do not share
+the emulator's full CUE/BIN loader. MJP extraction is a research utility, separate
+from native DSP playback. `testrom_gen` is also built; `make testrom.bin` generates
+its synthetic test ROM.
 
-```bash
-./disc_analyze  game.iso           # list disc contents
-./disc_compare  g1.iso g2.iso      # compare disc structures
-./mjp_extract   game.iso frames/   # extract MJP video frames
-./ptx_extract   game.iso images/   # extract PTX images
+Focused C tests live in [tools/](tools/), covering DSP instructions and DMA,
+firmware integration, video composition, graphics depth, CD streaming guards,
+PCM/IMA4 audio, volume, and frontend buffering/pacing. There is no unified
+`make test` target. Some tests need user-supplied firmware, movie files, captured
+RAM, or independent decoded references; read each test's source for its inputs.
+
+For a small test without proprietary fixtures:
+
+```sh
+cc -std=c11 -O2 tools/test_zsp400.c src/zsp400.c -o /tmp/test_zsp400
+/tmp/test_zsp400
 ```
+
+To check a Linux libretro build without a full frontend:
+
+```sh
+cc tools/retro_smoke.c -Isrc -o /tmp/retro_smoke -ldl
+/tmp/retro_smoke ./flashem_libretro.so /path/to/game.cue /path/to/system 600 /tmp/retro.ppm
+```
+
+`retro_smoke` also supports Windows DLLs. The audit/capture shell scripts in
+`tools/` are research helpers with local paths and fixture assumptions; adapt
+them before use. Graphics captures depend on the current `ge.h` layout and must
+be recreated when that layout changes.
 
 ## License
 
 MIT — see [LICENSE](LICENSE). `src/libretro.h` comes from the libretro project
-and keeps its own MIT notice.
+and retains its own MIT notice.
