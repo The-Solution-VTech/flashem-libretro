@@ -179,7 +179,7 @@ jobs:
           {
             echo "FlashEm, an emulator for the VTech V.Flash (V.Smile Pro)."
             echo
-            echo "Early and honest about it: discs boot, the MJP video decodes, and no game is playable yet - see the status section in the README for where the work stands."
+            echo "Games boot to their menus and 3D gameplay renders, with movies and sound, on a model of the real hardware. Still under active reverse engineering: compatibility is not complete - see the status section in the README for where the work stands."
             echo
             echo "**libretro core** - drop \`flashem_libretro_<platform>.so\` (or \`.dylib\`) into your frontend's \`cores\` directory, next to \`flashem_libretro.info\`. It takes \`.cue\`, \`.bin\` and \`.iso\`."
             echo
