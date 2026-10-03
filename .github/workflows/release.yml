@@ -42,9 +42,8 @@ jobs:
     steps:
       - uses: actions/checkout@main
 
-      # libjpeg is the MJP decoder's; SDL2 is the standalone frontend's, and the
-      # core is built without it (FLASHEM_NO_SDL).
-      # MSYS2 rather than MSVC: the makefiles are GNU make and the core is C,
+      # The core needs nothing beyond a C compiler and libm.
+      # MSYS2 rather than MSVC: the makefile is GNU make and the core is C,
       # so mingw-w64 builds it as it stands.
       - name: MSYS2 (Windows)
         if: runner.os == 'Windows'
@@ -55,55 +54,19 @@ jobs:
           install: >-
             make
             mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-libjpeg-turbo
-            mingw-w64-x86_64-SDL2
-
-      - name: Dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libjpeg-dev libsdl2-dev
-
-      - name: Dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install jpeg-turbo sdl2
-
-      # Homebrew keeps jpeg-turbo keg-only, so its headers are not on the
-      # default search path and the MJP decoder stops at jpeglib.h. The
-      # makefiles append to CFLAGS rather than setting it, so the environment
-      # is the way in; a command-line assignment would replace their flags.
-      - name: Point the compiler at Homebrew's jpeg (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          jpeg=$(brew --prefix jpeg-turbo)
-          sdl=$(brew --prefix sdl2)
-          # sdl2-config gives -I<prefix>/include/SDL2, and main.c includes
-          # <SDL2/SDL.h>, so the standalone needs the directory above it too.
-          echo "CFLAGS=-I$jpeg/include -I$sdl/include" >> "$GITHUB_ENV"
-          echo "LDFLAGS=-L$jpeg/lib -L$sdl/lib" >> "$GITHUB_ENV"
 
       - name: Build the libretro core
         if: runner.os != 'Windows'
         run: make -f Makefile.libretro -j$(getconf _NPROCESSORS_ONLN)
 
-      # Worth building too: the person who asked for releases wants something to
-      # run, and not everyone runs a libretro frontend.
-      - name: Build the standalone
-        if: runner.os != 'Windows'
-        run: make -j$(getconf _NPROCESSORS_ONLN) flashem || echo "standalone build failed - core still published"
-
-      # -static so the .dll carries libjpeg and libgcc rather than asking the
+      # -static so the .dll carries the MinGW runtime rather than asking the
       # person who downloads it to find matching MinGW runtimes.
-      - name: Build (Windows)
+      - name: Build the libretro core (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           export LDFLAGS="-static"
           make -f Makefile.libretro platform=win -j$(nproc)
-          # The target is flashem, not flashem.exe: make has no implicit rule
-          # for the suffix, while MinGW's gcc appends it to the output by
-          # itself. Asking for flashem.exe is how v0.1 went out without one.
-          make -j$(nproc) flashem || echo "standalone build failed - core still published"
 
       # A core missing an entry point loads and then does nothing useful, which
       # is a confusing thing to hand someone. Split per platform: the question
@@ -138,7 +101,6 @@ jobs:
           mkdir -p dist
           cp "${{ matrix.core }}" "dist/flashem_libretro_${{ matrix.name }}.${{ matrix.ext }}"
           cp flashem_libretro.info dist/ 2>/dev/null || true
-          if [ -f flashem ]; then cp flashem "dist/flashem_${{ matrix.name }}"; fi
 
       - name: Stage (Windows)
         if: runner.os == 'Windows'
@@ -147,7 +109,6 @@ jobs:
           mkdir -p dist
           cp "${{ matrix.core }}" "dist/flashem_libretro_${{ matrix.name }}.${{ matrix.ext }}"
           cp flashem_libretro.info dist/ 2>/dev/null || true
-          if [ -f flashem.exe ]; then cp flashem.exe "dist/flashem_${{ matrix.name }}.exe"; fi
 
 
       - uses: actions/upload-artifact@main
@@ -182,8 +143,6 @@ jobs:
             echo "Games boot to their menus and 3D gameplay renders, with movies and sound, on a model of the real hardware. Still under active reverse engineering: compatibility is not complete - see the status section in the README for where the work stands."
             echo
             echo "**libretro core** - drop \`flashem_libretro_<platform>.so\` (or \`.dylib\`) into your frontend's \`cores\` directory, next to \`flashem_libretro.info\`. It takes \`.cue\`, \`.bin\` and \`.iso\`."
-            echo
-            echo "**Standalone** - \`flashem_<platform>\`, an SDL2 window; run it with a disc image as its argument."
             echo
             echo "No save states: the emulator has no serialiser yet, so rewind, run-ahead and netplay are out until it grows one."
             echo
