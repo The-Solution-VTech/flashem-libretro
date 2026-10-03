@@ -1,8 +1,9 @@
 # FlashEm
 
 FlashEm is an experimental emulator for the VTech V.Flash, also sold as the
-V.Smile Pro, educational console (2006). It provides an SDL2 standalone
-application and a libretro core.
+V.Smile Pro, educational console (2006), as a libretro core. The repository also
+has an SDL2 standalone frontend, kept as a development tool (debugger, headless
+runs, screenshots); releases contain only the core.
 
 The emulator runs the console's original boot ROM and each disc's own ARM code.
 The ROM boots µMORE, mounts the disc through the emulated CD hardware, and loads
@@ -31,9 +32,11 @@ playability across every title, revision, or game mode.
 - **Audio:** BIOS sounds, PCM music, pitched/looped sample playback, Apple IMA4
   effects and movie streams, and the CDDA DMA path are implemented. Both
   frontends output 44.1 kHz stereo audio.
-- **Frontends:** Linux/WSL and Windows standalone/core builds have been exercised.
-  The libretro Makefile also has targets for other platforms; those do not imply
-  equivalent runtime validation.
+- **Frontends:** the libretro core has been run on Linux (x86_64 and aarch64)
+  and Windows. Releases also carry a macOS arm64 build, and
+  [.gitlab-ci.yml](.gitlab-ci.yml) builds the core with libretro's buildbot
+  templates for Windows, Linux, macOS, Android and iOS; those builds compile,
+  which does not imply equivalent runtime validation.
 
 ### Known limitations
 
@@ -50,6 +53,14 @@ playability across every title, revision, or game mode.
   Reload the content to restart it.
 - The libretro core currently advertises 60 Hz/NTSC timing even though framebuffer
   dimensions follow the video-engine registers, including PAL-sized rasters.
+
+## Download
+
+The [latest release](https://github.com/WizzardSK/flashem-libretro/releases/latest)
+has the libretro core for Linux (x86_64, aarch64), macOS (arm64) and Windows
+(x86_64), and `flashem_libretro.info`. Put the core in your frontend's `cores`
+directory and the info file in its `info` directory, then follow
+[Required files](#required-files).
 
 ## Required files
 
@@ -75,10 +86,18 @@ Opening a BIN directly also loses the CUE's track metadata.
 
 ## Build
 
-Run these commands from this repository's directory. The emulator needs a C
-compiler with C11 atomics, GNU Make, and the math library. The standalone frontend
-also needs SDL2 development files. The libretro core does not need SDL2, and
-normal emulation does not require a host JPEG library.
+Run these commands from this repository's directory. The core needs a C
+compiler with C11 atomics, GNU Make, and the math library, nothing else. Only the
+standalone development frontend also needs SDL2 development files; normal
+emulation does not require a host JPEG library.
+
+The core alone, on any platform with GCC or Clang:
+
+```sh
+make -f Makefile.libretro -j
+```
+
+The sections below also build the standalone frontend and the tools.
 
 ### Linux / WSL
 
@@ -127,9 +146,11 @@ all use `.lr.o`, so run `make -f Makefile.libretro platform=<target> clean`
 before switching core target platforms. Header dependencies are only partially
 listed; use a clean rebuild after changing shared structures in headers.
 
-## Run the standalone emulator
+## Standalone frontend (development)
 
-With `70004.bin` in the current directory:
+The standalone frontend is for development - the debugger, headless runs and
+scripted screenshots below - and is not published in releases. With `70004.bin`
+in the current directory:
 
 ```sh
 ./flashem "path/to/game.cue"
@@ -160,6 +181,9 @@ standalone frontend's accelerated pacing.
 | C | Green | X |
 | V | Blue | Y |
 | Enter | Enter / OK | Start |
+
+With RetroArch's default keyboard mapping of the RetroPad, that is: arrow keys,
+X for red, Z for yellow, S for green, A for blue, and Enter.
 
 In the standalone frontend, F5 saves `screenshot.bmp`, F11 toggles fullscreen,
 and Esc quits. F2 pauses/resumes when started with `--dbg` or `--dbg-run`.
