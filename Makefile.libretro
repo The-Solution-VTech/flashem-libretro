@@ -70,7 +70,7 @@ else ifneq (,$(findstring ios,$(platform)))
 	TARGET := $(TARGET_NAME)_libretro_ios.dylib
 	fpic := -fPIC
 	SHARED := -dynamiclib
-	MINVERSION := -miphoneos-version-min=11.0
+	MINVERSION := -miphoneos-version-min=12.0
 	IOSSDK := $(shell xcodebuild -version -sdk iphoneos Path 2>/dev/null)
 	CC := cc -arch arm64 -isysroot $(IOSSDK) $(MINVERSION)
 	CFLAGS += -DIOS

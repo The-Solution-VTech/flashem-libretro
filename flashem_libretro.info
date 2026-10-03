@@ -1,6 +1,6 @@
 # Software Information
 display_name = "V.Flash (FlashEm)"
-authors = "WizzardSK"
+authors = "WizzardSK|deadman96385"
 supported_extensions = "cue|bin|iso"
 corename = "FlashEm"
 categories = "Emulator"
@@ -18,7 +18,7 @@ database = "VTech - V.Flash"
 supports_no_game = "false"
 firmware_count = 1
 firmware0_desc = "70004.bin (V.Flash boot ROM)"
-firmware0_path = "70004.bin"
+firmware0_path = "flashem/70004.bin"
 firmware0_opt = "false"
 notes = "(!) 70004.bin (md5): f19e090723accb3353a7c4bef342af71"
 savestate = "false"
@@ -34,4 +34,4 @@ block_extract = "true"
 disk_control = "false"
 is_experimental = "true"
 
-description = "Emulator for the VTech V.Flash, also sold as the V.Smile Pro: a 2006 educational console built on an LSI ZEVIO 1020 (ARM926EJ-S) that plays CD-ROMs. The first emulator for the system, and early: it runs the real boot ROM to the system menu, but does not read discs yet, and save states are not implemented."
+description = "Emulator for the VTech V.Flash, also sold as the V.Smile Pro: a 2006 educational console built on an LSI ZEVIO 1020 (ARM926EJ-S) that plays CD-ROMs. It models the real hardware, from the CD drive to the graphics engine and the ZSP400 DSP that decodes the movies, and games boot to their menus and 3D gameplay. Still under active reverse engineering: compatibility is not complete, and save states are not implemented."
