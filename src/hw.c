@@ -652,7 +652,7 @@ static int uart_link(int u) {
     if (!e || !*e || !strcmp(e, "0")) return -1;
     int fd = posix_openpt(O_RDWR | O_NOCTTY);
     if (fd < 0 || grantpt(fd) || unlockpt(fd)) {
-        printf("[UART%d] link: no pseudo-terminal (%s)\n", u, strerror(errno));
+        fprintf(stderr, "[UART%d] link: no pseudo-terminal (%s)\n", u, strerror(errno));
         if (fd >= 0) close(fd);
         return -1;
     }
@@ -663,13 +663,13 @@ static int uart_link(int u) {
     /* An end of our own kept open, so the terminal stays up between one
      * connection of the debugger and the next. */
     if (name) uart_link_keep[u] = open(name, O_RDWR | O_NOCTTY);
-    printf("[UART%d] link: %s\n", u, name ? name : "?");
+    /* on stderr: --quiet and VFLASH_LOG take stdout away */
+    fprintf(stderr, "[UART%d] link: %s\n", u, name ? name : "?");
     if (name && strcmp(e, "1")) {
         unlink(e);
-        if (symlink(name, e)) printf("[UART%d] link: could not make %s (%s)\n", u, e, strerror(errno));
-        else printf("[UART%d] link: also as %s\n", u, e);
+        if (symlink(name, e)) fprintf(stderr, "[UART%d] link: could not make %s (%s)\n", u, e, strerror(errno));
+        else fprintf(stderr, "[UART%d] link: also as %s\n", u, e);
     }
-    fflush(stdout);
     uart_link_fd[u] = fd;
     return fd;
 }

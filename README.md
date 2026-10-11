@@ -284,7 +284,7 @@ Other device-specific tracing switches are documented in the source.
 A program that talks to a host over the console's UART - a debug stub, a monitor - can be reached from the host as if over a serial cable. With `VFLASH_UART0_LINK=/tmp/vflash-uart0` (or `VFLASH_UART1_LINK` for the second UART) the emulator makes a pseudo-terminal, ties the UART to it and links it at that path; the terminal's own name (`/dev/pts/N`, different every run) is printed as `[UART0] link: ...`. Point the host tool at the path where it would take `/dev/ttyUSB0`:
 
 ```sh
-VFLASH_UART0_LINK=/tmp/vflash-uart0 ./flashem --quiet memcard.qa.bin &
+VFLASH_UART0_LINK=/tmp/vflash-uart0 ./flashem --load program.elf &
 picocom /tmp/vflash-uart0
 ```
 
