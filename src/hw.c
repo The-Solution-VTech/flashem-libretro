@@ -640,6 +640,8 @@ static void uart_rx_push(HW *hw, int u, uint8_t b) {
  * is made (the terminal's own name changes with every run), or 1 for none;
  * either way the name is printed. Use it where /dev/ttyUSB0 would be used.
  * The controller is off that UART then. Not on Windows. */
+FILE *hw_uart_out;
+
 #ifdef UART_LINK
 static int uart_link_fd[2] = { -1, -1 };
 static int uart_link_keep[2] = { -1, -1 };
@@ -663,12 +665,17 @@ static int uart_link(int u) {
     /* An end of our own kept open, so the terminal stays up between one
      * connection of the debugger and the next. */
     if (name) uart_link_keep[u] = open(name, O_RDWR | O_NOCTTY);
-    /* on stderr: --quiet and VFLASH_LOG take stdout away */
-    fprintf(stderr, "[UART%d] link: %s\n", u, name ? name : "?");
+    /* Where the program's own UART lines go when --quiet has sent the
+     * emulator's log to the null device, else stderr */
+    FILE *out = hw_uart_out ? hw_uart_out : stderr;
+    fprintf(out, "[UART%d] link: %s\n", u, name ? name : "?");
     if (name && strcmp(e, "1")) {
         unlink(e);
-        if (symlink(name, e)) fprintf(stderr, "[UART%d] link: could not make %s (%s)\n", u, e, strerror(errno));
-        else fprintf(stderr, "[UART%d] link: also as %s\n", u, e);
+        if (symlink(name, e)) fprintf(out, "[UART%d] link: could not make %s (%s)\n", u, e, strerror(errno));
+        else fprintf(out, "[UART%d] link: also as %s\n", u, e);
+    }
+    fflush(out);
+    {
     }
     uart_link_fd[u] = fd;
     return fd;
@@ -822,8 +829,6 @@ static void uart_int_check(HW *hw, int u) {
     int on = ((s->ier & 1) && s->rx_n) || (s->pending & s->ier & 2);
     int_set(hw, u ? 2 : INT_SERIAL, on);
 }
-
-FILE *hw_uart_out;
 
 static void uart_out(HW *hw, int u, uint8_t ch) {
     typeof(hw->uart[0]) *s = &hw->uart[u];
