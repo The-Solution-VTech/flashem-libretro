@@ -57,8 +57,9 @@ playability across every title, revision, or game mode.
 ## Download
 
 The [latest release](https://github.com/WizzardSK/flashem-libretro/releases/latest)
-has the libretro core for Linux (x86_64, aarch64), macOS (arm64) and Windows
-(x86_64), and `flashem_libretro.info`. Put the core in your frontend's `cores`
+has the libretro core for Linux (x86_64, aarch64), macOS (arm64), Windows
+(x86_64) and Android (arm64-v8a, armeabi-v7a, x86_64, x86; name the one for
+your device `flashem_libretro_android.so`), and `flashem_libretro.info`. Put the core in your frontend's `cores`
 directory and the info file in its `info` directory, then follow
 [Required files](#required-files).
 

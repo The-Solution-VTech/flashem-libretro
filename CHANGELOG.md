@@ -24,8 +24,11 @@ Mostly what running homebrew needed, worked out with mrdudz (#3): programs built
 - `--quiet` shows only what the program writes to its UARTs.
 - Serial link: `VFLASH_UART0_LINK` / `VFLASH_UART1_LINK` tie a UART to a pseudo-terminal on the host, for a debugger or monitor that would use a serial cable. Linux and macOS. New and not yet tried with a real tool.
 
-### Building
+### Builds
 
+- Android builds of the core in the release: arm64-v8a, armeabi-v7a, x86_64 and x86. Built, not yet run on a device.
+- The core info file is in libretro's full layout, with the controls and the disc image advice in its notes.
+- The release's notes carry the newest section of this changelog.
 - The Makefiles generate header dependencies, so a changed header rebuilds what includes it.
 
 ## v0.1 - 2026-10-03
