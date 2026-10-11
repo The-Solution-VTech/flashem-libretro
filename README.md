@@ -271,12 +271,24 @@ condition is supplied.
 | `VFLASH_TRACEPC=<hex>[:<hex>...][,N]` | Trace registers at selected instruction addresses, with an optional hit limit |
 | `VFLASH_IOHIST=<from>,<to>[,page]` | Collect MMIO access counts by address and PC |
 | `VFLASH_CDLOG=1` | Trace CD servo/decoder activity |
+| `VFLASH_UART0_LINK=<path>` / `VFLASH_UART1_LINK=<path>` | Tie that UART to a pseudo-terminal on the host, raw both ways, and make a link to it at `<path>` (`1`: no link, the name is only printed). Not on Windows |
 | `VFLASH_GELOG=1` | Report unhandled graphics commands |
 | `VFLASH_GECAP=<file>,<frame>[,<frames>]` | Capture graphics state, RAM, and command-list inputs for replay |
 
 `VFLASH_INPUT` uses the button masks in [src/vflash.h](src/vflash.h): directions
 `01/02/04/08`, red/yellow/green/blue `10/20/40/80`, and Enter `100` (hex).
 Other device-specific tracing switches are documented in the source.
+
+### Serial link
+
+A program that talks to a host over the console's UART - a debug stub, a monitor - can be reached from the host as if over a serial cable. With `VFLASH_UART0_LINK=/tmp/vflash-uart0` (or `VFLASH_UART1_LINK` for the second UART) the emulator makes a pseudo-terminal, ties the UART to it and links it at that path; the terminal's own name (`/dev/pts/N`, different every run) is printed as `[UART0] link: ...`. Point the host tool at the path where it would take `/dev/ttyUSB0`:
+
+```sh
+VFLASH_UART0_LINK=/tmp/vflash-uart0 ./flashem --quiet memcard.qa.bin &
+picocom /tmp/vflash-uart0
+```
+
+The link is raw: every byte the program sends goes out, every byte that comes in is received, and the baud rate set on either side is ignored. Bytes from the host wait in the terminal until the UART has room, so a program that polls loses none. The controller, which normally sits on UART0, is disconnected from a linked UART. The lines the program prints are still logged as without the link. Linux and macOS only.
 
 ### Debugger
 

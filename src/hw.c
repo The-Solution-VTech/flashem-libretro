@@ -17,6 +17,13 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#if !defined(_WIN32)
+#define UART_LINK 1
+#include <errno.h>
+#include <fcntl.h>
+#include <termios.h>
+#include <unistd.h>
+#endif
 
 #define RAM_BASE   0x10000000u
 #define RAM_SIZE   (16u * 1024 * 1024)
@@ -625,6 +632,69 @@ static void uart_rx_push(HW *hw, int u, uint8_t b) {
     if (s->rx_n < cap) s->rx[(s->rx_h + s->rx_n++) % sizeof s->rx] = b;
 }
 
+/* A UART wired to the host instead of to a controller, for a debugger or a
+ * terminal that would talk to the console over a serial cable (mrdudz, #3):
+ * VFLASH_UART0_LINK / VFLASH_UART1_LINK make a pseudo-terminal and tie the
+ * UART to it, raw - every byte the program sends goes out, every byte that
+ * comes in is received. The value is a path at which a link to the terminal
+ * is made (the terminal's own name changes with every run), or 1 for none;
+ * either way the name is printed. Use it where /dev/ttyUSB0 would be used.
+ * The controller is off that UART then. Not on Windows. */
+#ifdef UART_LINK
+static int uart_link_fd[2] = { -1, -1 };
+static int uart_link_keep[2] = { -1, -1 };
+static int uart_link_tried[2];
+
+static int uart_link(int u) {
+    if (uart_link_tried[u]) return uart_link_fd[u];
+    uart_link_tried[u] = 1;
+    const char *e = getenv(u ? "VFLASH_UART1_LINK" : "VFLASH_UART0_LINK");
+    if (!e || !*e || !strcmp(e, "0")) return -1;
+    int fd = posix_openpt(O_RDWR | O_NOCTTY);
+    if (fd < 0 || grantpt(fd) || unlockpt(fd)) {
+        printf("[UART%d] link: no pseudo-terminal (%s)\n", u, strerror(errno));
+        if (fd >= 0) close(fd);
+        return -1;
+    }
+    const char *name = ptsname(fd);
+    struct termios t;
+    if (!tcgetattr(fd, &t)) { cfmakeraw(&t); tcsetattr(fd, TCSANOW, &t); }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    /* An end of our own kept open, so the terminal stays up between one
+     * connection of the debugger and the next. */
+    if (name) uart_link_keep[u] = open(name, O_RDWR | O_NOCTTY);
+    printf("[UART%d] link: %s\n", u, name ? name : "?");
+    if (name && strcmp(e, "1")) {
+        unlink(e);
+        if (symlink(name, e)) printf("[UART%d] link: could not make %s (%s)\n", u, e, strerror(errno));
+        else printf("[UART%d] link: also as %s\n", u, e);
+    }
+    fflush(stdout);
+    uart_link_fd[u] = fd;
+    return fd;
+}
+
+/* What has come in from the host, as far as the UART has room for it: the
+ * rest waits in the terminal, so nothing is lost to a program that polls. */
+static void uart_link_poll(HW *hw, int u) {
+    int fd = uart_link(u);
+    if (fd < 0) return;
+    typeof(hw->uart[0]) *s = &hw->uart[u];
+    int cap = (s->ier & 1) ? (int)sizeof s->rx : 16;
+    while (s->rx_n < cap) {
+        uint8_t b[16];
+        int want = cap - s->rx_n;
+        if (want > (int)sizeof b) want = (int)sizeof b;
+        ssize_t n = read(fd, b, (size_t)want);
+        if (n <= 0) break;
+        for (ssize_t i = 0; i < n; i++) uart_rx_push(hw, u, b[i]);
+    }
+}
+#else
+static int uart_link(int u) { (void)u; return -1; }
+static void uart_link_poll(HW *hw, int u) { (void)hw; (void)u; }
+#endif
+
 static void pad_send(HW *hw, int u, const uint8_t *p, int n) {
     uint8_t pk[64]; int k = 0;
     unsigned sum = 1 + (unsigned)n;
@@ -736,6 +806,7 @@ static void pad_frame(HW *hw) {
     /* Once the kernel has opened the port (receive interrupt enabled), or a
      * program has sent the controller a packet and polls for the answer
      * without interrupts (vtech-lib's PADMODE_POLLING). */
+    if (uart_link(u) >= 0) return;   /* the host is on this UART, not the controller */
     if (!(hw->uart[u].ier & 1) && !hw->uart[u].pad_open) return;
     uint32_t in = pad_buttons(hw), down = in & ~hw->pad_prev;
     hw->pad_prev = in;
@@ -761,6 +832,15 @@ static void uart_out(HW *hw, int u, uint8_t ch) {
         if (n[u]++ < 96)
             printf("[UART%d] tx %02X PC=%08X\n", u, ch, hw->cpu->r[15]);
     }
+#ifdef UART_LINK
+    if (uart_link(u) >= 0) {
+        /* raw to the host; a full terminal (nobody reading) drops the byte.
+         * The lines are still logged below, as without the link. */
+        ssize_t w = write(uart_link_fd[u], &ch, 1);
+        (void)w;
+    } else
+#endif
+    {
     /* controller packets */
     if (ch == 0xFF) s->pk_len = 0;
     if (s->pk_len < (int)sizeof s->pk) s->pk[s->pk_len++] = ch;
@@ -769,6 +849,7 @@ static void uart_out(HW *hw, int u, uint8_t ch) {
         s->pk_len = 0;
         s->pad_open = 1;
         if (!getenv("VFLASH_NOPAD")) pad_reply(hw, u);
+    }
     }
     if (ch == '\n' || s->len == (int)sizeof(s->line) - 1) {
         s->line[s->len] = 0;
@@ -787,6 +868,13 @@ static void uart_out(HW *hw, int u, uint8_t ch) {
 static uint32_t uart_read(HW *hw, uint32_t pa) {
     int u = (pa >> 16) == 0x9003;
     typeof(hw->uart[0]) *s = &hw->uart[u];
+    /* The host's bytes are looked for when the program looks: at the data and
+     * status registers, the status one only every so often - a program that
+     * polls it does little else. */
+    if ((pa & 0x3F) == 0x00 || ((pa & 0x3F) == 0x14 && !s->rx_n)) {
+        static unsigned every[2];
+        if ((pa & 0x3F) == 0x00 || !(every[u]++ & 63)) { uart_link_poll(hw, u); uart_int_check(hw, u); }
+    }
     switch (pa & 0x3F) {
     case 0x00: {
         if (s->lcr & 0x80) return s->dll;
@@ -2439,6 +2527,8 @@ static void exit_hook(HW *hw) {
 void hw_run_frame(HW *hw) {
     ARM9 *c = hw->cpu;
     exit_hook(hw);
+    for (int u = 0; u < 2; u++)
+        if (uart_link(u) >= 0) { uart_link_poll(hw, u); uart_int_check(hw, u); }
     pad_frame(hw);
     prof_frame(hw);
     uint64_t end = c->cycles + hw->cpu_hz / 60;
