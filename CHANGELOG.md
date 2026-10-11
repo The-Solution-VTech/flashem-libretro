@@ -2,6 +2,10 @@
 
 What changed in FlashEm, newest first. Releases are builds of the libretro core; the standalone frontend is built from source and is for development.
 
+## Unreleased
+
+- The standalone builds again with GCC 14 on Linux: the serial link's pseudo-terminal functions were used without their declarations being asked for, which older compilers only warned about (mrdudz, #3).
+
 ## v0.2 - 2026-10-11
 
 Mostly what running homebrew needed, worked out with mrdudz (#3): programs built with vtech-lib, DooM and Noiz2sa among them, now start, show their picture, take the controller and play sound.

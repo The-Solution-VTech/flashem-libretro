@@ -4,6 +4,14 @@
  * the devices the boot ROM and µMORE touch follow Firebird's "classic" models
  * (github.com/nspire-emus/firebird, core/misc.c and core/interrupt.c). Every
  * access to an address nothing here models is logged once as [HW?]. */
+/* For the serial link's pseudo-terminal (posix_openpt, grantpt, unlockpt,
+ * ptsname): XSI functions, which glibc only declares when asked - an implicit
+ * declaration is an error from GCC 14 on. Before every include. */
+#if !defined(_WIN32)
+#define _XOPEN_SOURCE 700
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
+#endif
 #include "hw.h"
 #include "vflash.h"
 #include "cdrom.h"
